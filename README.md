@@ -1,4 +1,4 @@
-Bash Script Manager
+# Bash Script Manager
 
 A GTK-based Bash Script Manager built with C# and .NET, designed to help users manage and run bash scripts through a simple graphical interface.
 Features
@@ -11,14 +11,15 @@ Features
 
     Clickable icons and dialogs for improved user experience
 
-Getting Started
+# Getting Started
+
 1. Navigate to the Project Directory
 
 Before building or publishing, change to your project folder (where the .csproj file is located):
 
 cd /path/to/your/app/ConsoleApp2
 
-2. Build and Publish
+# 2. Build and Publish
 
 Publish a self-contained Linux executable with:
 
@@ -36,7 +37,7 @@ This command:
 
     Note: Make sure your images folder is included in the publish output. You can configure your .csproj file to copy it automatically or copy it manually after publishing.
 
-3. Run the Application
+# 3. Run the Application
 
 Run the app from inside the project directory (the parent folder of publish):
 
@@ -44,7 +45,7 @@ Run the app from inside the project directory (the parent folder of publish):
 
     Important: Running the executable from outside the project directory may cause resource loading errors (e.g., missing images).
 
-Troubleshooting
+# Troubleshooting
 
     If you get errors about missing image files, verify that the images folder exists inside the publish directory.
 
