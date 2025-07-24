@@ -1,177 +1,185 @@
 using Gdk;
 using Gtk;
+using Spectre.Console;
 using System.Diagnostics;
 using System.Text.Json;
 using Window = Gtk.Window;
 
 namespace BashScriptManager;
 
-public class Script
-{
-    public string Title { get; set; }
-    public string Content { get; set; }
-}
-
-public class ProcessResourceInfo
-{
-    public double CpuUsage { get; set; }
-    public long MemoryUsage { get; set; } // in KB
-    public DateTime LastUpdate { get; set; }
-}
-
 public class Interface
 {
-    private Window window;
-    private ListStore scriptStore;
-    private List<Script> scripts;
-    private Dictionary<string, Process> runningProcesses = new Dictionary<string, Process>();
-    private Dictionary<string, ProcessResourceInfo> processResources = new Dictionary<string, ProcessResourceInfo>();
+    private const string STATUS_STOPPED = "⚫ Stopped";
+
+    private static readonly JsonSerializerOptions s_serializerOptions = new JsonSerializerOptions { WriteIndented = true };
+
+    private readonly Window window;
+    private readonly ListStore scriptStore = new(typeof(string), typeof(string), typeof(string)); // Title, Status, Resources
+    private readonly List<Script> scripts = [];
+    private readonly Dictionary<string, Process> runningProcesses = [];
+    private readonly Dictionary<string, ProcessResourceInfo> processResources = [];
     private const string ConfigFile = "scripts.json";
     private bool isDisposing = false;
-    private System.Threading.Timer resourceMonitorTimer;
+    private readonly System.Threading.Timer resourceMonitorTimer;
 
     public Interface()
     {
         Application.Init();
-        window = new Window("");
+
+        window = new Window(string.Empty);
+        InitUserInterface();
+
+        resourceMonitorTimer = new System.Threading.Timer(UpdateResourceUsage, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+
+        window.DeleteEvent += OnWindowDeleteEvent;
+        window.ShowAll();
+    }
+
+    public void Run()
+    {
+        Application.Run();
+    }
+
+    private void InitUserInterface()
+    {
         window.SetDefaultSize(1300, 800);
 
-        Gdk.Geometry hints = new Gdk.Geometry
+        Gdk.Geometry hints = new()
         {
             MinWidth = 900,
             MinHeight = 600
         };
         window.SetGeometryHints(window, hints, Gdk.WindowHints.MinSize);
 
-        var mainBox = new Box(Orientation.Horizontal, 10);
-        var leftBox = new Box(Orientation.Vertical, 10);
-        var rightBox = new Box(Orientation.Vertical, 10);
+        Box mainBox = new(Orientation.Horizontal, 10);
+        Box leftBox = new(Orientation.Vertical, 10);
+        Box rightBox = new(Orientation.Vertical, 10);
 
-
-
-        var headerBar = new HeaderBar
+        HeaderBar headerBar = new()
         {
             Title = "Bash Script Manager",
             ShowCloseButton = true
         };
 
         string imagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "images", "Information_icon.svg-removebg-preview(2).png");
-        Pixbuf original = new Pixbuf(imagePath);
+        Pixbuf original = new(imagePath);
         Pixbuf scaled = original.ScaleSimple(50, 50, InterpType.Bilinear);
-        var image = new Gtk.Image(scaled);
+        Image image = new(scaled);
 
-        var infoButton = new Gtk.Button();
-        infoButton.Relief = ReliefStyle.None;
+        Button infoButton = new()
+        {
+            Relief = ReliefStyle.None
+        };
         infoButton.Add(image);
         image.Show();
         infoButton.Show();
 
         infoButton.Clicked += (s, e) =>
         {
-            var dialog = new MessageDialog(
+            MessageDialog dialog = new(
                 window,
                 DialogFlags.Modal,
                 MessageType.Info,
                 ButtonsType.Ok,
                 "Developed by Sam O'Reilly @ https://github.com/Samoreilly");
-            dialog.Run();
+            _ = dialog.Run();
             dialog.Destroy();
         };
 
         headerBar.PackStart(infoButton);
 
-
-
         headerBar.Add(infoButton);
 
         window.Titlebar = headerBar;
 
-        var titleEntry = new Entry { PlaceholderText = "Enter script title" };
-        var textView = new TextView();
-        textView.WrapMode = WrapMode.Word;
-        var scrolledWindow = new ScrolledWindow();
+        Entry titleEntry = new() { PlaceholderText = "Enter script title" };
+        TextView textView = new()
+        {
+            WrapMode = WrapMode.Word
+        };
+
+        ScrolledWindow scrolledWindow = new();
         scrolledWindow.SetSizeRequest(600, 400);
         scrolledWindow.Add(textView);
 
-        var addButton = new Button("Add Script");
-        var fileButton = new Button("Add from File");
-        var inputBox = new Box(Orientation.Horizontal, 5);
+        Button addButton = new("Add Script");
+        Button fileButton = new("Add from File");
+        Box inputBox = new(Orientation.Horizontal, 5);
         inputBox.PackStart(addButton, false, false, 0);
         inputBox.PackStart(fileButton, false, false, 0);
 
-        var stopButton = new Button("Stop Process");
+        Button stopButton = new("Stop Process");
         stopButton.Clicked += (s, e) => ShowStopDialog();
         leftBox.PackStart(titleEntry, false, false, 0);
         leftBox.PackStart(scrolledWindow, true, true, 0);
         leftBox.PackStart(inputBox, false, false, 0);
         leftBox.PackStart(stopButton, false, false, 0);
 
-        scripts = LoadScripts();
-        scriptStore = new ListStore(typeof(string), typeof(string), typeof(string)); // Title, Status, Resources
-        foreach (var script in scripts)
+        scripts.AddRange(LoadScripts().Select(s =>
         {
-            scriptStore.AppendValues(script.Title, "⚫ Stopped", "");
-        }
+            _ = scriptStore.AppendValues(s.Title, STATUS_STOPPED, string.Empty);
+            return s;
+        }));
 
-        var treeView = new TreeView(scriptStore);
+        TreeView treeView = new(scriptStore);
 
-        var titleColumn = new TreeViewColumn { Title = "Script Title" };
-        var cellText = new CellRendererText();
+        TreeViewColumn titleColumn = new() { Title = "Script Title" };
+        CellRendererText cellText = new();
         titleColumn.PackStart(cellText, true);
         titleColumn.AddAttribute(cellText, "text", 0);
-        treeView.AppendColumn(titleColumn);
+        _ = treeView.AppendColumn(titleColumn);
 
-        var statusColumn = new TreeViewColumn { Title = "Status" };
-        var cellStatus = new CellRendererText();
+        TreeViewColumn statusColumn = new() { Title = "Status" };
+        CellRendererText cellStatus = new();
         statusColumn.PackStart(cellStatus, true);
         statusColumn.AddAttribute(cellStatus, "text", 1);
-        treeView.AppendColumn(statusColumn);
+        _ = treeView.AppendColumn(statusColumn);
 
-        var resourceColumn = new TreeViewColumn { Title = "Resources" };
-        var cellResource = new CellRendererText();
+        TreeViewColumn resourceColumn = new() { Title = "Resources" };
+        CellRendererText cellResource = new();
         resourceColumn.PackStart(cellResource, true);
         resourceColumn.AddAttribute(cellResource, "text", 2);
-        treeView.AppendColumn(resourceColumn);
+        _ = treeView.AppendColumn(resourceColumn);
 
-        var runAllButton = new Button("Run All Scripts");
-        var stopAllButton = new Button("Stop All Processes");
-        var scriptScroll = new ScrolledWindow();
+        Button runAllButton = new("Run All Scripts");
+        Button stopAllButton = new("Stop All Processes");
+        ScrolledWindow scriptScroll = new();
         scriptScroll.SetSizeRequest(600, 400);
         scriptScroll.Add(treeView);
 
-        var runColumn = new TreeViewColumn { Title = "Run" };
-        var cellRun = new CellRendererText
+        TreeViewColumn runColumn = new() { Title = "Run" };
+        CellRendererText cellRun = new()
         {
             Text = "▶ Run",
             Foreground = "#4CAF50"
         };
         runColumn.PackStart(cellRun, true);
-        treeView.AppendColumn(runColumn);
+        _ = treeView.AppendColumn(runColumn);
 
-        var deleteColumn = new TreeViewColumn { Title = "Delete" };
-        var cellDelete = new CellRendererText
+        TreeViewColumn deleteColumn = new() { Title = "Delete" };
+        CellRendererText cellDelete = new()
         {
             Text = "🗑 Delete",
             Foreground = "#F44336"
         };
         deleteColumn.PackStart(cellDelete, true);
-        treeView.AppendColumn(deleteColumn);
+        _ = treeView.AppendColumn(deleteColumn);
 
         treeView.ButtonPressEvent += (o, args) =>
         {
-            if (isDisposing) return;
+            if (isDisposing)
+            {
+                return;
+            }
 
             if (args.Event.Button == 1)
             {
-                TreePath path;
-                TreeViewColumn column;
-                if (treeView.GetPathAtPos((int)args.Event.X, (int)args.Event.Y, out path, out column))
+                if (treeView.GetPathAtPos((int)args.Event.X, (int)args.Event.Y, out TreePath path, out TreeViewColumn column))
                 {
-                    TreeIter iter;
-                    if (scriptStore.GetIter(out iter, path))
+                    if (scriptStore.GetIter(out TreeIter iter, path))
                     {
-                        var title = (string)scriptStore.GetValue(iter, 0);
-                        var script = scripts.Find(s => s.Title == title);
+                        string title = (string)scriptStore.GetValue(iter, 0);
+                        Script? script = scripts.Find(s => s.Title == title);
 
                         if (column == runColumn && script != null)
                         {
@@ -179,20 +187,22 @@ public class Interface
                         }
                         else if (column == deleteColumn)
                         {
-                            var confirmDialog = new MessageDialog(
+                            MessageDialog confirmDialog = new(
                                 window,
                                 DialogFlags.Modal,
                                 MessageType.Question,
                                 ButtonsType.YesNo,
-                                $"Are you sure you want to delete the script '{title}'?");
-                            confirmDialog.Title = "Confirm Delete";
+                                $"Are you sure you want to delete the script '{title}'?")
+                            {
+                                Title = "Confirm Delete"
+                            };
 
                             try
                             {
                                 if (confirmDialog.Run() == (int)ResponseType.Yes)
                                 {
-                                    scripts.RemoveAll(s => s.Title == title);
-                                    scriptStore.Remove(ref iter);
+                                    _ = scripts.RemoveAll(s => s.Title == title);
+                                    _ = scriptStore.Remove(ref iter);
                                     SaveScripts();
                                 }
                             }
@@ -206,7 +216,7 @@ public class Interface
             }
         };
 
-        var buttonBox = new Box(Orientation.Horizontal, 10);
+        Box buttonBox = new(Orientation.Horizontal, 10);
         buttonBox.PackStart(runAllButton, true, true, 0);
         buttonBox.PackStart(stopAllButton, true, true, 0);
 
@@ -220,34 +230,43 @@ public class Interface
 
         addButton.Clicked += (s, e) =>
         {
-            if (isDisposing) return;
+            if (isDisposing)
+            {
+                return;
+            }
 
-            var title = titleEntry.Text.Trim();
-            var scriptText = textView.Buffer.Text.Trim();
+            string title = titleEntry.Text.Trim();
+            string scriptText = textView.Buffer.Text.Trim();
             if (string.IsNullOrEmpty(title))
+            {
                 title = $"Script {scripts.Count + 1}";
+            }
+
             if (!string.IsNullOrEmpty(scriptText))
             {
                 scripts.Add(new Script { Title = title, Content = scriptText });
-                scriptStore.AppendValues(title, "⚫ Stopped", "");
+                _ = scriptStore.AppendValues(title, STATUS_STOPPED, string.Empty);
                 SaveScripts();
-                titleEntry.Text = "";
-                textView.Buffer.Text = "";
+                titleEntry.Text = string.Empty;
+                textView.Buffer.Text = string.Empty;
             }
         };
 
         fileButton.Clicked += (s, e) =>
         {
-            if (isDisposing) return;
+            if (isDisposing)
+            {
+                return;
+            }
 
-            var dialog = new FileChooserDialog(
+            FileChooserDialog dialog = new(
                 "Choose a bash script file",
                 window,
                 FileChooserAction.Open,
                 "Cancel", ResponseType.Cancel,
                 "Open", ResponseType.Accept);
 
-            var filter = new FileFilter();
+            FileFilter filter = new();
             filter.AddPattern("*.sh");
             dialog.AddFilter(filter);
 
@@ -255,17 +274,20 @@ public class Interface
             {
                 if (dialog.Run() == (int)ResponseType.Accept)
                 {
-                    var filePath = dialog.Filename;
+                    string filePath = dialog.Filename;
                     if (File.Exists(filePath))
                     {
-                        var scriptText = File.ReadAllText(filePath);
-                        var title = titleEntry.Text.Trim();
+                        string scriptText = File.ReadAllText(filePath);
+                        string title = titleEntry.Text.Trim();
                         if (string.IsNullOrEmpty(title))
+                        {
                             title = Path.GetFileNameWithoutExtension(filePath);
+                        }
+
                         scripts.Add(new Script { Title = title, Content = scriptText });
-                        scriptStore.AppendValues(title, "⚫ Stopped", "");
+                        _ = scriptStore.AppendValues(title, STATUS_STOPPED, string.Empty);
                         SaveScripts();
-                        titleEntry.Text = "";
+                        titleEntry.Text = string.Empty;
                     }
                 }
             }
@@ -277,9 +299,12 @@ public class Interface
 
         runAllButton.Clicked += (s, e) =>
         {
-            if (isDisposing) return;
+            if (isDisposing)
+            {
+                return;
+            }
 
-            foreach (var script in scripts)
+            foreach (Script script in scripts)
             {
                 RunScript(script.Content, script.Title);
             }
@@ -287,7 +312,10 @@ public class Interface
 
         stopAllButton.Clicked += (s, e) =>
         {
-            if (isDisposing) return;
+            if (isDisposing)
+            {
+                return;
+            }
 
             if (runningProcesses.Count == 0)
             {
@@ -295,56 +323,60 @@ public class Interface
                 return;
             }
 
-            var confirmDialog = new MessageDialog(
+            MessageDialog confirmDialog = new(
                 window,
                 DialogFlags.Modal,
                 MessageType.Question,
                 ButtonsType.YesNo,
-                $"Are you sure you want to stop all {runningProcesses.Count} running processes?");
-            confirmDialog.Title = "Confirm Stop All";
+                $"Are you sure you want to stop all {runningProcesses.Count} running processes?")
+            {
+                Title = "Confirm Stop All"
+            };
 
             try
             {
-                if (confirmDialog.Run() == (int)ResponseType.Yes)
+                if (confirmDialog.Run() != (int)ResponseType.Yes)
                 {
-                    var processesToStop = new List<string>(runningProcesses.Keys);
-                    foreach (var title in processesToStop)
-                    {
-                        if (runningProcesses.TryGetValue(title, out var process))
-                        {
-                            try
-                            {
-                                if (!process.HasExited)
-                                {
-                                    process.Kill();
-                                    Console.WriteLine($"Stopped process: {title}");
-                                }
-                                runningProcesses.Remove(title);
-                                if (processResources.ContainsKey(title))
-                                {
-                                    processResources.Remove(title);
-                                }
-                                UpdateScriptStatus(title, "⚫ Stopped", "");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"Error stopping process '{title}': {ex.Message}");
-                            }
-                        }
-                    }
-                    SafeShowMessage($"Stopped all running processes.");
+                    return;
                 }
+
+                List<string> processesToStop = [.. runningProcesses.Keys];
+                foreach (string title in processesToStop)
+                {
+                    if (!runningProcesses.TryGetValue(title, out Process? process))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            process.Kill();
+                            AnsiConsole.WriteLine($"Stopped process: {title}");
+                        }
+
+                        _ = runningProcesses.Remove(title);
+
+                        if (processResources.ContainsKey(title))
+                        {
+                            _ = processResources.Remove(title);
+                        }
+
+                        UpdateScriptStatus(title, STATUS_STOPPED, string.Empty);
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.WriteLine($"Error stopping process '{title}': {ex.Message}");
+                    }
+                }
+
+                SafeShowMessage($"Stopped all running processes.");
             }
             finally
             {
                 confirmDialog.Destroy();
             }
         };
-
-        resourceMonitorTimer = new System.Threading.Timer(UpdateResourceUsage, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
-
-        window.DeleteEvent += OnWindowDeleteEvent;
-        window.ShowAll();
     }
 
     private void OnWindowDeleteEvent(object o, DeleteEventArgs e)
@@ -359,23 +391,24 @@ public class Interface
 
         resourceMonitorTimer?.Dispose();
 
-        var processesToKill = new List<Process>(runningProcesses.Values);
-        foreach (var process in processesToKill)
+        List<Process> processesToKill = [.. runningProcesses.Values];
+        foreach (Process process in processesToKill)
         {
             try
             {
                 if (!process.HasExited)
                 {
                     process.Kill();
-                    process.WaitForExit(1000); // Wait up to 1 second
+                    _ = process.WaitForExit(1000); // Wait up to 1 second
                 }
                 process.Dispose();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error stopping process: {ex.Message}");
+                AnsiConsole.WriteLine($"Error stopping process: {ex.Message}");
             }
         }
+
         runningProcesses.Clear();
         processResources.Clear();
 
@@ -384,17 +417,23 @@ public class Interface
 
     private void RunScript(string script, string title)
     {
-        if (isDisposing) return;
+        if (isDisposing)
+        {
+            return;
+        }
 
         try
         {
             string tempDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "temp");
             if (!Directory.Exists(tempDir))
-                Directory.CreateDirectory(tempDir);
-            var tempFile = Path.Combine(tempDir, Path.GetRandomFileName() + ".sh");
+            {
+                _ = Directory.CreateDirectory(tempDir);
+            }
+
+            string tempFile = Path.Combine(tempDir, Path.GetRandomFileName() + ".sh");
             File.WriteAllText(tempFile, script);
 
-            var chmodProcess = new Process
+            using Process chmodProcess = new()
             {
                 StartInfo = new ProcessStartInfo
                 {
@@ -406,18 +445,18 @@ public class Interface
                     CreateNoWindow = true
                 }
             };
-            chmodProcess.Start();
+
+            _ = chmodProcess.Start();
             chmodProcess.WaitForExit();
+
             if (chmodProcess.ExitCode != 0)
             {
                 SafeShowMessage($"Error setting executable permissions for '{title}': {chmodProcess.StandardError.ReadToEnd()}");
                 File.Delete(tempFile);
-                chmodProcess.Dispose();
                 return;
             }
-            chmodProcess.Dispose();
 
-            var process = new Process
+            using Process process = new()
             {
                 StartInfo = new ProcessStartInfo
                 {
@@ -434,7 +473,7 @@ public class Interface
             {
                 if (!string.IsNullOrEmpty(e.Data) && !isDisposing)
                 {
-                    Console.WriteLine($"[{title}] Output: {e.Data}");
+                    AnsiConsole.WriteLine($"[[[blue]{title}[/]]] Output: {e.Data}");
                 }
             };
 
@@ -442,45 +481,47 @@ public class Interface
             {
                 if (!string.IsNullOrEmpty(e.Data) && !isDisposing)
                 {
-                    Console.WriteLine($"[{title}] Error: {e.Data}");
+                    AnsiConsole.WriteLine($"[[[red]{title}[/]]] Error: {e.Data}");
                 }
             };
 
             process.Exited += (s, e) =>
             {
-                GLib.Idle.Add(() =>
+                _ = GLib.Idle.Add(() =>
                 {
                     try
                     {
                         if (runningProcesses.ContainsKey(title))
                         {
-                            runningProcesses.Remove(title);
+                            _ = runningProcesses.Remove(title);
                         }
                         if (processResources.ContainsKey(title))
                         {
-                            processResources.Remove(title);
+                            _ = processResources.Remove(title);
                         }
-                        UpdateScriptStatus(title, "⚫ Stopped", "");
+                        UpdateScriptStatus(title, STATUS_STOPPED, string.Empty);
 
                         if (File.Exists(tempFile))
+                        {
                             File.Delete(tempFile);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error during process cleanup: {ex.Message}");
+                        AnsiConsoleLogger.LogError($"Error during process cleanup: {ex.Message}");
                     }
                     return false;
                 });
             };
 
             process.EnableRaisingEvents = true;
-            process.Start();
+            _ = process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
             runningProcesses[title] = process;
             UpdateScriptStatus(title, "🟢 Running", "Starting...");
-            Console.WriteLine($"Started process: {title} (PID: {process.Id})");
+            AnsiConsoleLogger.LogInformation($"Started process: {title} (PID: {process.Id})");
         }
         catch (Exception ex)
         {
@@ -490,7 +531,10 @@ public class Interface
 
     private void ShowStopDialog()
     {
-        if (isDisposing) return;
+        if (isDisposing)
+        {
+            return;
+        }
 
         if (runningProcesses.Count == 0)
         {
@@ -498,95 +542,103 @@ public class Interface
             return;
         }
 
-        var dialog = new Dialog("Stop a Process", window, DialogFlags.Modal);
-        var contentArea = dialog.ContentArea;
-        var vbox = new Box(Orientation.Vertical, 5);
+        Dialog dialog = new("Stop a Process", window, DialogFlags.Modal);
+        Box contentArea = dialog.ContentArea;
+        Box vbox = new(Orientation.Vertical, 5);
 
-        var listStore = new ListStore(typeof(string));
-        foreach (var title in runningProcesses.Keys)
+        ListStore listStore = new(typeof(string));
+        foreach (string title in runningProcesses.Keys)
         {
-            listStore.AppendValues(title);
+            _ = listStore.AppendValues(title);
         }
 
-        var treeView = new TreeView(listStore);
-        treeView.AppendColumn("Running Processes", new CellRendererText(), "text", 0);
-        var scrolledWindow = new ScrolledWindow();
-        scrolledWindow.Add(treeView);
+        TreeView treeView = new(listStore);
+        _ = treeView.AppendColumn("Running Processes", new CellRendererText(), "text", 0);
+        ScrolledWindow scrolledWindow = new()
+        {
+            treeView
+        };
         vbox.PackStart(scrolledWindow, true, true, 0);
 
-        var stopButton = new Button("Stop Selected Process");
+        Button stopButton = new("Stop Selected Process");
         stopButton.Clicked += (s, e) =>
         {
-            TreeIter iter;
-            if (treeView.Selection.GetSelected(out iter))
+            if (!treeView.Selection.GetSelected(out TreeIter iter))
             {
-                var title = (string)listStore.GetValue(iter, 0);
-                if (runningProcesses.TryGetValue(title, out var process))
+                return;
+            }
+
+            string title = (string)listStore.GetValue(iter, 0);
+            if (!runningProcesses.TryGetValue(title, out Process? process))
+            {
+                return;
+            }
+
+            try
+            {
+                if (!process.HasExited)
                 {
-                    try
+                    _ = runningProcesses.Remove(title);
+                    dialog.Respond(ResponseType.Cancel);
+                    return;
+                }
+
+                if (title.Contains("Kafka"))
+                {
+                    process.Kill();
+                    SafeShowMessage($"Process for '{title}' stopped.");
+                    return;
+                }
+
+                string kafkaHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "kafka/kafka_2.13-3.9.1");
+                string stopScript = Path.Combine(kafkaHome, "bin", "kafka-server-stop.sh");
+                if (File.Exists(stopScript))
+                {
+                    using Process stopProcess = new()
                     {
-                        if (!process.HasExited)
+                        StartInfo = new ProcessStartInfo
                         {
-                            if (title.Contains("Kafka"))
-                            {
-                                var kafkaHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "kafka/kafka_2.13-3.9.1");
-                                var stopScript = Path.Combine(kafkaHome, "bin", "kafka-server-stop.sh");
-                                if (File.Exists(stopScript))
-                                {
-                                    var stopProcess = new Process
-                                    {
-                                        StartInfo = new ProcessStartInfo
-                                        {
-                                            FileName = "/bin/bash",
-                                            Arguments = stopScript,
-                                            UseShellExecute = false,
-                                            CreateNoWindow = true,
-                                            RedirectStandardError = true
-                                        }
-                                    };
-                                    stopProcess.Start();
-                                    stopProcess.WaitForExit();
-                                    if (stopProcess.ExitCode == 0)
-                                    {
-                                        SafeShowMessage($"Kafka process for '{title}' stopped successfully.");
-                                    }
-                                    else
-                                    {
-                                        SafeShowMessage($"Error stopping Kafka for '{title}': {stopProcess.StandardError.ReadToEnd()}");
-                                    }
-                                    stopProcess.Dispose();
-                                }
-                                else
-                                {
-                                    SafeShowMessage($"Kafka stop script not found for '{title}'. Falling back to force kill.");
-                                    process.Kill();
-                                }
-                            }
-                            else
-                            {
-                                process.Kill();
-                                SafeShowMessage($"Process for '{title}' stopped.");
-                            }
+                            FileName = "/bin/bash",
+                            Arguments = stopScript,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardError = true
                         }
-                        runningProcesses.Remove(title);
-                        dialog.Respond(ResponseType.Cancel);
-                    }
-                    catch (Exception ex)
+                    };
+
+                    _ = stopProcess.Start();
+                    stopProcess.WaitForExit();
+
+                    if (stopProcess.ExitCode == 0)
                     {
-                        SafeShowMessage($"Error stopping process '{title}': {ex.Message}");
+                        SafeShowMessage($"Kafka process for '{title}' stopped successfully.");
+                    }
+                    else
+                    {
+                        SafeShowMessage($"Error stopping Kafka for '{title}': {stopProcess.StandardError.ReadToEnd()}");
                     }
                 }
+                else
+                {
+                    SafeShowMessage($"Kafka stop script not found for '{title}'. Falling back to force kill.");
+                    process.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                SafeShowMessage($"Error stopping process '{title}': {ex.Message}");
             }
         };
+
         vbox.PackStart(stopButton, false, false, 0);
 
         contentArea.Add(vbox);
-        dialog.AddButton("Cancel", ResponseType.Cancel);
+        _ = dialog.AddButton("Cancel", ResponseType.Cancel);
         dialog.ShowAll();
 
         try
         {
-            dialog.Run();
+            _ = dialog.Run();
         }
         finally
         {
@@ -596,20 +648,25 @@ public class Interface
 
     private void UpdateScriptStatus(string title, string status, string resources)
     {
-        if (isDisposing) return;
-
-        GLib.Idle.Add(() =>
+        if (isDisposing)
         {
-            if (isDisposing) return false;
+            return;
+        }
+
+        _ = GLib.Idle.Add(() =>
+        {
+            if (isDisposing)
+            {
+                return false;
+            }
 
             try
             {
-                TreeIter iter;
-                if (scriptStore.GetIterFirst(out iter))
+                if (scriptStore.GetIterFirst(out TreeIter iter))
                 {
                     do
                     {
-                        var scriptTitle = (string)scriptStore.GetValue(iter, 0);
+                        string scriptTitle = (string)scriptStore.GetValue(iter, 0);
                         if (scriptTitle == title)
                         {
                             scriptStore.SetValue(iter, 1, status);
@@ -621,28 +678,31 @@ public class Interface
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error updating script status: {ex.Message}");
+                AnsiConsoleLogger.LogError($"Error updating script status: {ex.Message}");
             }
             return false;
         });
     }
 
-    private void UpdateResourceUsage(object state)
+    private void UpdateResourceUsage(object? state)
     {
-        if (isDisposing) return;
-
-        var currentProcesses = new Dictionary<string, Process>(runningProcesses);
-
-        foreach (var kvp in currentProcesses)
+        if (isDisposing)
         {
-            var title = kvp.Key;
-            var process = kvp.Value;
+            return;
+        }
+
+        Dictionary<string, Process> currentProcesses = new(runningProcesses);
+
+        foreach (KeyValuePair<string, Process> kvp in currentProcesses)
+        {
+            string title = kvp.Key;
+            Process process = kvp.Value;
 
             try
             {
                 if (!process.HasExited)
                 {
-                    var psProcess = new Process
+                    using Process psProcess = new()
                     {
                         StartInfo = new ProcessStartInfo
                         {
@@ -655,105 +715,105 @@ public class Interface
                         }
                     };
 
-                    psProcess.Start();
-                    var output = psProcess.StandardOutput.ReadToEnd();
+                    _ = psProcess.Start();
+                    string output = psProcess.StandardOutput.ReadToEnd();
                     psProcess.WaitForExit();
-                    psProcess.Dispose();
 
                     if (!string.IsNullOrWhiteSpace(output))
                     {
-                        var parts = output.Trim().Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 3)
+                        string[] parts = output.Trim().Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 3 && double.TryParse(parts[1], out double cpu) && long.TryParse(parts[2], out long memory))
                         {
-                            if (double.TryParse(parts[1], out double cpu) && long.TryParse(parts[2], out long memory))
+                            processResources[title] = new ProcessResourceInfo
                             {
-                                processResources[title] = new ProcessResourceInfo
-                                {
-                                    CpuUsage = cpu,
-                                    MemoryUsage = memory,
-                                    LastUpdate = DateTime.Now
-                                };
+                                CpuUsage = cpu,
+                                MemoryUsage = memory,
+                                LastUpdate = DateTime.Now
+                            };
 
-                                var memoryMB = memory / 1024.0;
-                                var resourceText = $"CPU: {cpu:F1}% | MEM: {memoryMB:F1}MB";
-                                UpdateScriptStatus(title, "🟢 Running", resourceText);
-                            }
+                            double memoryMB = memory / 1024.0;
+                            string resourceText = $"CPU: {cpu:F1}% | MEM: {memoryMB:F1}MB";
+                            UpdateScriptStatus(title, "🟢 Running", resourceText);
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error monitoring process '{title}': {ex.Message}");
+                AnsiConsoleLogger.LogError($"Error monitoring process '{title}': {ex.Message}");
             }
         }
     }
 
     private void SafeShowMessage(string message)
     {
-        if (isDisposing) return;
+        if (isDisposing)
+        {
+            return;
+        }
 
         try
         {
-            var dialog = new MessageDialog(
+            MessageDialog dialog = new(
                 window,
                 DialogFlags.Modal,
                 MessageType.Info,
                 ButtonsType.Ok,
                 message);
-            dialog.Run();
+            _ = dialog.Run();
             dialog.Destroy();
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error showing message dialog: {ex.Message}");
+            AnsiConsoleLogger.LogError($"Error showing message dialog: {ex.Message}");
         }
     }
 
-    private List<Script> LoadScripts()
+    private void SaveScripts()
+    {
+        if (isDisposing)
+        {
+            return;
+        }
+
+        try
+        {
+            string json = JsonSerializer.Serialize(scripts, s_serializerOptions);
+            File.WriteAllText(ConfigFile, json);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsoleLogger.LogError($"Error saving scripts: {ex.Message}");
+        }
+    }
+
+    private static List<Script> LoadScripts()
     {
         try
         {
             if (File.Exists(ConfigFile))
             {
-                var json = File.ReadAllText(ConfigFile);
-                var scriptsData = JsonSerializer.Deserialize<List<Script>>(json);
-                if (scriptsData == null)
+                string json = File.ReadAllText(ConfigFile);
+                List<Script>? scriptsData = JsonSerializer.Deserialize<List<Script>>(json);
+
+                if (scriptsData is null)
                 {
-                    Console.WriteLine("Warning: No valid scripts found in scripts.json. Starting with an empty list.");
-                    return new List<Script>();
+                    AnsiConsoleLogger.LogError("Warning: No valid scripts found in scripts.json. Starting with an empty list.");
+                    return [];
                 }
+
                 return scriptsData;
             }
         }
         catch (JsonException ex)
         {
-            Console.WriteLine($"Error loading scripts: Invalid JSON format - {ex.Message}. Starting with an empty list.");
+            AnsiConsoleLogger.LogError($"Error loading scripts: Invalid JSON format - {ex.Message}. Starting with an empty list.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error loading scripts: {ex.Message}. Starting with an empty list.");
+            AnsiConsoleLogger.LogError($"Error loading scripts: {ex.Message}. Starting with an empty list.");
         }
-        return new List<Script>();
-    }
 
-    private void SaveScripts()
-    {
-        if (isDisposing) return;
-
-        try
-        {
-            var json = JsonSerializer.Serialize(scripts, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(ConfigFile, json);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error saving scripts: {ex.Message}");
-        }
-    }
-
-    public void Run()
-    {
-        Application.Run();
+        return [];
     }
 }

@@ -2,11 +2,9 @@
 
 public static class Program
 {
-    static void Main(string[] args)
+    private static void Main(string[] args)
     {
-
-        var ui = new Interface();
+        Interface ui = new();
         ui.Run();
-
     }
 }
