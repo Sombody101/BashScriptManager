@@ -9,7 +9,7 @@ Features
 
     Clean and intuitive user interface
 
-    Clickable icons and dialogs for improved UX
+    Clickable icons and dialogs for improved user experience
 
 Getting Started
 1. Navigate to the Project Directory
@@ -34,7 +34,8 @@ This command:
 
     Outputs the result into the publish folder inside your project directory
 
-Make sure your images folder is included in the publish output. You can configure your .csproj to copy it automatically or copy it manually after publishing.
+    Note: Make sure your images folder is included in the publish output. You can configure your .csproj file to copy it automatically or copy it manually after publishing.
+
 3. Run the Application
 
 Run the app from inside the project directory (the parent folder of publish):
@@ -55,4 +56,4 @@ Troubleshooting
 
 License
 
-MIT License
+This project is licensed under the MIT License.
