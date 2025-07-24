@@ -10,9 +10,13 @@
     <ItemGroup>
       <PackageReference Include="GtkSharp" Version="3.24.24.95" />
     </ItemGroup>
+<ItemGroup>
+  <None Update="images/**/*">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+  </None>
+</ItemGroup>
 
-    <ItemGroup>
-      <Folder Include="images\" />
-    </ItemGroup>
+
 
 </Project>
