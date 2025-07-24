@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 
 namespace ConsoleApp2
 {
@@ -13,21 +14,30 @@ namespace ConsoleApp2
         public string Content { get; set; }
     }
 
+    public class ProcessResourceInfo
+    {
+        public double CpuUsage { get; set; }
+        public long MemoryUsage { get; set; } // in KB
+        public DateTime LastUpdate { get; set; }
+    }
+
     public class Interface
     {
         private Window window;
         private ListStore scriptStore;
         private List<Script> scripts;
         private Dictionary<string, Process> runningProcesses = new Dictionary<string, Process>();
+        private Dictionary<string, ProcessResourceInfo> processResources = new Dictionary<string, ProcessResourceInfo>();
         private const string ConfigFile = "scripts.json";
         private bool isDisposing = false;
+        private System.Threading.Timer resourceMonitorTimer;
 
         public Interface()
         {
             Application.Init();
             window = new Window("Bash Script Manager");
             window.SetDefaultSize(1300, 800);
-
+            
             Gdk.Geometry hints = new Gdk.Geometry
             {
                 MinWidth = 900,
@@ -39,6 +49,8 @@ namespace ConsoleApp2
             var mainBox = new Box(Orientation.Horizontal, 10);
             var leftBox = new Box(Orientation.Vertical, 10);
             var rightBox = new Box(Orientation.Vertical, 10);
+            
+
 
             // Left side: Title entry, text input, and file chooser
             var titleEntry = new Entry { PlaceholderText = "Enter script title" };
@@ -63,83 +75,116 @@ namespace ConsoleApp2
 
             // Right side: Script list and Run All button
             scripts = LoadScripts();
-            scriptStore = new ListStore(typeof(string));
+            scriptStore = new ListStore(typeof(string), typeof(string), typeof(string)); // Title, Status, Resources
             foreach (var script in scripts)
             {
-                scriptStore.AppendValues(script.Title);
+                scriptStore.AppendValues(script.Title, "⚫ Stopped", "");
             }
 
             var treeView = new TreeView(scriptStore);
+            
+            // Script Title column
             var titleColumn = new TreeViewColumn { Title = "Script Title" };
             var cellText = new CellRendererText();
             titleColumn.PackStart(cellText, true);
             titleColumn.AddAttribute(cellText, "text", 0);
             treeView.AppendColumn(titleColumn);
 
+            // Status column
+            var statusColumn = new TreeViewColumn { Title = "Status" };
+            var cellStatus = new CellRendererText();
+            statusColumn.PackStart(cellStatus, true);
+            statusColumn.AddAttribute(cellStatus, "text", 1);
+            treeView.AppendColumn(statusColumn);
+
+            // Resource Usage column
+            var resourceColumn = new TreeViewColumn { Title = "Resources" };
+            var cellResource = new CellRendererText();
+            resourceColumn.PackStart(cellResource, true);
+            resourceColumn.AddAttribute(cellResource, "text", 2);
+            treeView.AppendColumn(resourceColumn);
+
             var runAllButton = new Button("Run All Scripts");
+            var stopAllButton = new Button("Stop All Processes");
             var scriptScroll = new ScrolledWindow();
             scriptScroll.SetSizeRequest(600, 400);
             scriptScroll.Add(treeView);
 
             // Add Run button column
             var runColumn = new TreeViewColumn { Title = "Run" };
-            var cellRun = new CellRendererToggle();
-            cellRun.Activatable = true;
-            runColumn.PackStart(cellRun, true);
-            cellRun.Toggled += (s, e) =>
-            {
-                if (isDisposing) return;
-                
-                TreeIter iter;
-                if (scriptStore.GetIter(out iter, new TreePath(e.Path)))
-                {
-                    var title = (string)scriptStore.GetValue(iter, 0);
-                    var script = scripts.Find(s => s.Title == title);
-                    if (script != null)
-                        RunScript(script.Content, title);
-                }
+            var cellRun = new CellRendererText 
+            { 
+                Text = "▶ Run",
+                Foreground = "#4CAF50"
             };
+            runColumn.PackStart(cellRun, true);
             treeView.AppendColumn(runColumn);
 
-            // Add Delete button column
+            // Add Delete button column  
             var deleteColumn = new TreeViewColumn { Title = "Delete" };
-            var cellDelete = new CellRendererToggle();
-            cellDelete.Activatable = true;
+            var cellDelete = new CellRendererText 
+            { 
+                Text = "🗑 Delete",
+                Foreground = "#F44336"
+            };
             deleteColumn.PackStart(cellDelete, true);
-            cellDelete.Toggled += (s, e) =>
+            treeView.AppendColumn(deleteColumn);
+
+            // Handle row clicks for Run and Delete
+            treeView.ButtonPressEvent += (o, args) =>
             {
                 if (isDisposing) return;
                 
-                TreeIter iter;
-                if (scriptStore.GetIter(out iter, new TreePath(e.Path)))
+                if (args.Event.Button == 1) // Left click
                 {
-                    var title = (string)scriptStore.GetValue(iter, 0);
-                    var confirmDialog = new MessageDialog(
-                        window,
-                        DialogFlags.Modal,
-                        MessageType.Question,
-                        ButtonsType.YesNo,
-                        $"Are you sure you want to delete the script '{title}'?");
-                    confirmDialog.Title = "Confirm Delete";
-                    
-                    try
+                    TreePath path;
+                    TreeViewColumn column;
+                    if (treeView.GetPathAtPos((int)args.Event.X, (int)args.Event.Y, out path, out column))
                     {
-                        if (confirmDialog.Run() == (int)ResponseType.Yes)
+                        TreeIter iter;
+                        if (scriptStore.GetIter(out iter, path))
                         {
-                            scripts.RemoveAll(s => s.Title == title);
-                            scriptStore.Remove(ref iter);
-                            SaveScripts();
+                            var title = (string)scriptStore.GetValue(iter, 0);
+                            var script = scripts.Find(s => s.Title == title);
+                            
+                            if (column == runColumn && script != null)
+                            {
+                                RunScript(script.Content, title);
+                            }
+                            else if (column == deleteColumn)
+                            {
+                                var confirmDialog = new MessageDialog(
+                                    window,
+                                    DialogFlags.Modal,
+                                    MessageType.Question,
+                                    ButtonsType.YesNo,
+                                    $"Are you sure you want to delete the script '{title}'?");
+                                confirmDialog.Title = "Confirm Delete";
+                                
+                                try
+                                {
+                                    if (confirmDialog.Run() == (int)ResponseType.Yes)
+                                    {
+                                        scripts.RemoveAll(s => s.Title == title);
+                                        scriptStore.Remove(ref iter);
+                                        SaveScripts();
+                                    }
+                                }
+                                finally
+                                {
+                                    confirmDialog.Destroy();
+                                }
+                            }
                         }
-                    }
-                    finally
-                    {
-                        confirmDialog.Destroy();
                     }
                 }
             };
-            treeView.AppendColumn(deleteColumn);
 
-            rightBox.PackStart(runAllButton, false, false, 0);
+            var buttonBox = new Box(Orientation.Horizontal, 10);
+            buttonBox.PackStart(runAllButton, true, true, 0);
+            buttonBox.PackStart(stopAllButton, true, true, 0);
+            
+            rightBox.PackStart(buttonBox, false, false, 0);
             rightBox.PackStart(scriptScroll, true, true, 0);
 
             mainBox.PackStart(leftBox, true, true, 5);
@@ -159,7 +204,7 @@ namespace ConsoleApp2
                 if (!string.IsNullOrEmpty(scriptText))
                 {
                     scripts.Add(new Script { Title = title, Content = scriptText });
-                    scriptStore.AppendValues(title);
+                    scriptStore.AppendValues(title, "⚫ Stopped", "");
                     SaveScripts();
                     titleEntry.Text = "";
                     textView.Buffer.Text = "";
@@ -193,7 +238,7 @@ namespace ConsoleApp2
                             if (string.IsNullOrEmpty(title))
                                 title = Path.GetFileNameWithoutExtension(filePath);
                             scripts.Add(new Script { Title = title, Content = scriptText });
-                            scriptStore.AppendValues(title);
+                            scriptStore.AppendValues(title, "⚫ Stopped", "");
                             SaveScripts();
                             titleEntry.Text = "";
                         }
@@ -215,6 +260,65 @@ namespace ConsoleApp2
                 }
             };
 
+            stopAllButton.Clicked += (s, e) =>
+            {
+                if (isDisposing) return;
+                
+                if (runningProcesses.Count == 0)
+                {
+                    SafeShowMessage("No processes are currently running.");
+                    return;
+                }
+
+                var confirmDialog = new MessageDialog(
+                    window,
+                    DialogFlags.Modal,
+                    MessageType.Question,
+                    ButtonsType.YesNo,
+                    $"Are you sure you want to stop all {runningProcesses.Count} running processes?");
+                confirmDialog.Title = "Confirm Stop All";
+                
+                try
+                {
+                    if (confirmDialog.Run() == (int)ResponseType.Yes)
+                    {
+                        var processesToStop = new List<string>(runningProcesses.Keys);
+                        foreach (var title in processesToStop)
+                        {
+                            if (runningProcesses.TryGetValue(title, out var process))
+                            {
+                                try
+                                {
+                                    if (!process.HasExited)
+                                    {
+                                        process.Kill();
+                                        Console.WriteLine($"Stopped process: {title}");
+                                    }
+                                    runningProcesses.Remove(title);
+                                    if (processResources.ContainsKey(title))
+                                    {
+                                        processResources.Remove(title);
+                                    }
+                                    UpdateScriptStatus(title, "⚫ Stopped", "");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Error stopping process '{title}': {ex.Message}");
+                                }
+                            }
+                        }
+                        SafeShowMessage($"Stopped all running processes.");
+                    }
+                }
+                finally
+                {
+                    confirmDialog.Destroy();
+                }
+            };
+
+            // Start resource monitoring timer
+            resourceMonitorTimer = new System.Threading.Timer(UpdateResourceUsage, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+
             // Properly handle window close event
             window.DeleteEvent += OnWindowDeleteEvent;
             window.ShowAll();
@@ -229,6 +333,9 @@ namespace ConsoleApp2
         private void CleanupAndExit()
         {
             isDisposing = true;
+            
+            // Stop resource monitoring
+            resourceMonitorTimer?.Dispose();
             
             // Stop all running processes
             var processesToKill = new List<Process>(runningProcesses.Values);
@@ -249,6 +356,7 @@ namespace ConsoleApp2
                 }
             }
             runningProcesses.Clear();
+            processResources.Clear();
             
             Application.Quit();
         }
@@ -329,6 +437,11 @@ namespace ConsoleApp2
                             {
                                 runningProcesses.Remove(title);
                             }
+                            if (processResources.ContainsKey(title))
+                            {
+                                processResources.Remove(title);
+                            }
+                            UpdateScriptStatus(title, "⚫ Stopped", "");
                             // Clean up temp file
                             if (File.Exists(tempFile))
                                 File.Delete(tempFile);
@@ -347,6 +460,8 @@ namespace ConsoleApp2
                 process.BeginErrorReadLine();
                 
                 runningProcesses[title] = process;
+                UpdateScriptStatus(title, "🟢 Running", "Starting...");
+                Console.WriteLine($"Started process: {title} (PID: {process.Id})");
             }
             catch (Exception ex)
             {
@@ -457,6 +572,102 @@ namespace ConsoleApp2
             finally
             {
                 dialog.Destroy();
+            }
+        }
+
+        private void UpdateScriptStatus(string title, string status, string resources)
+        {
+            if (isDisposing) return;
+            
+            GLib.Idle.Add(() =>
+            {
+                if (isDisposing) return false;
+                
+                try
+                {
+                    TreeIter iter;
+                    if (scriptStore.GetIterFirst(out iter))
+                    {
+                        do
+                        {
+                            var scriptTitle = (string)scriptStore.GetValue(iter, 0);
+                            if (scriptTitle == title)
+                            {
+                                scriptStore.SetValue(iter, 1, status);
+                                scriptStore.SetValue(iter, 2, resources);
+                                break;
+                            }
+                        } while (scriptStore.IterNext(ref iter));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error updating script status: {ex.Message}");
+                }
+                return false;
+            });
+        }
+
+        private void UpdateResourceUsage(object state)
+        {
+            if (isDisposing) return;
+            
+            var currentProcesses = new Dictionary<string, Process>(runningProcesses);
+            
+            foreach (var kvp in currentProcesses)
+            {
+                var title = kvp.Key;
+                var process = kvp.Value;
+                
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        // Get process info using ps command
+                        var psProcess = new Process
+                        {
+                            StartInfo = new ProcessStartInfo
+                            {
+                                FileName = "ps",
+                                Arguments = $"-p {process.Id} -o pid,pcpu,rss --no-headers",
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            }
+                        };
+                        
+                        psProcess.Start();
+                        var output = psProcess.StandardOutput.ReadToEnd();
+                        psProcess.WaitForExit();
+                        psProcess.Dispose();
+                        
+                        if (!string.IsNullOrWhiteSpace(output))
+                        {
+                            var parts = output.Trim().Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length >= 3)
+                            {
+                                if (double.TryParse(parts[1], out double cpu) && long.TryParse(parts[2], out long memory))
+                                {
+                                    processResources[title] = new ProcessResourceInfo
+                                    {
+                                        CpuUsage = cpu,
+                                        MemoryUsage = memory,
+                                        LastUpdate = DateTime.Now
+                                    };
+                                    
+                                    var memoryMB = memory / 1024.0;
+                                    var resourceText = $"CPU: {cpu:F1}% | MEM: {memoryMB:F1}MB";
+                                    UpdateScriptStatus(title, "🟢 Running", resourceText);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error monitoring process '{title}': {ex.Message}");
+                }
             }
         }
 
