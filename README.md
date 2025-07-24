@@ -18,7 +18,7 @@ Before building or publishing, change to your project folder (where the .csproj 
 cd /path/to/your/app/BashScriptManager
 ```
 
-# 2. Build and Publish
+# Build and Publish
 
 Publish a Linux executable with:
 
