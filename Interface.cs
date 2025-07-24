@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
+using Gdk;
+using Window = Gtk.Window;
 
 namespace ConsoleApp2
 {
@@ -35,7 +37,7 @@ namespace ConsoleApp2
         public Interface()
         {
             Application.Init();
-            window = new Window("Bash Script Manager");
+            window = new Window("");
             window.SetDefaultSize(1300, 800);
             
             Gdk.Geometry hints = new Gdk.Geometry
@@ -45,14 +47,49 @@ namespace ConsoleApp2
             };
             window.SetGeometryHints(window, hints, Gdk.WindowHints.MinSize);
 
-            // Main container
             var mainBox = new Box(Orientation.Horizontal, 10);
             var leftBox = new Box(Orientation.Vertical, 10);
             var rightBox = new Box(Orientation.Vertical, 10);
+
+
             
+            var headerBar = new HeaderBar
+            {
+                Title = "Bash Script Manager",
+                ShowCloseButton = true
+            };
+            
+            string imagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "images", "Information_icon.svg-removebg-preview(2).png");
+            Pixbuf original = new Pixbuf(imagePath);
+            Pixbuf scaled = original.ScaleSimple(50, 50, InterpType.Bilinear);
+            var image = new Gtk.Image(scaled);
+            
+            var infoButton = new Gtk.Button();
+            infoButton.Relief = ReliefStyle.None;
+            infoButton.Add(image);
+            image.Show();
+            infoButton.Show();
+            
+            infoButton.Clicked += (s, e) =>
+            {
+                var dialog = new MessageDialog(
+                    window,
+                    DialogFlags.Modal,
+                    MessageType.Info,
+                    ButtonsType.Ok,
+                    "Developed by Sam O'Reilly @ https://github.com/Samoreilly");
+                dialog.Run();
+                dialog.Destroy();
+            };
+            
+            headerBar.PackStart(infoButton);
 
-
-            // Left side: Title entry, text input, and file chooser
+            
+            
+            headerBar.Add(infoButton);
+         
+            window.Titlebar = headerBar;
+            
             var titleEntry = new Entry { PlaceholderText = "Enter script title" };
             var textView = new TextView();
             textView.WrapMode = WrapMode.Word;
@@ -72,8 +109,7 @@ namespace ConsoleApp2
             leftBox.PackStart(scrolledWindow, true, true, 0);
             leftBox.PackStart(inputBox, false, false, 0);
             leftBox.PackStart(stopButton, false, false, 0);
-
-            // Right side: Script list and Run All button
+            
             scripts = LoadScripts();
             scriptStore = new ListStore(typeof(string), typeof(string), typeof(string)); // Title, Status, Resources
             foreach (var script in scripts)
@@ -83,21 +119,18 @@ namespace ConsoleApp2
 
             var treeView = new TreeView(scriptStore);
             
-            // Script Title column
             var titleColumn = new TreeViewColumn { Title = "Script Title" };
             var cellText = new CellRendererText();
             titleColumn.PackStart(cellText, true);
             titleColumn.AddAttribute(cellText, "text", 0);
             treeView.AppendColumn(titleColumn);
-
-            // Status column
+            
             var statusColumn = new TreeViewColumn { Title = "Status" };
             var cellStatus = new CellRendererText();
             statusColumn.PackStart(cellStatus, true);
             statusColumn.AddAttribute(cellStatus, "text", 1);
             treeView.AppendColumn(statusColumn);
-
-            // Resource Usage column
+            
             var resourceColumn = new TreeViewColumn { Title = "Resources" };
             var cellResource = new CellRendererText();
             resourceColumn.PackStart(cellResource, true);
@@ -109,8 +142,7 @@ namespace ConsoleApp2
             var scriptScroll = new ScrolledWindow();
             scriptScroll.SetSizeRequest(600, 400);
             scriptScroll.Add(treeView);
-
-            // Add Run button column
+            
             var runColumn = new TreeViewColumn { Title = "Run" };
             var cellRun = new CellRendererText 
             { 
@@ -119,8 +151,7 @@ namespace ConsoleApp2
             };
             runColumn.PackStart(cellRun, true);
             treeView.AppendColumn(runColumn);
-
-            // Add Delete button column  
+            
             var deleteColumn = new TreeViewColumn { Title = "Delete" };
             var cellDelete = new CellRendererText 
             { 
@@ -129,13 +160,12 @@ namespace ConsoleApp2
             };
             deleteColumn.PackStart(cellDelete, true);
             treeView.AppendColumn(deleteColumn);
-
-            // Handle row clicks for Run and Delete
+            
             treeView.ButtonPressEvent += (o, args) =>
             {
                 if (isDisposing) return;
                 
-                if (args.Event.Button == 1) // Left click
+                if (args.Event.Button == 1) 
                 {
                     TreePath path;
                     TreeViewColumn column;
@@ -192,7 +222,6 @@ namespace ConsoleApp2
 
             window.Add(mainBox);
 
-            // Event handlers
             addButton.Clicked += (s, e) =>
             {
                 if (isDisposing) return;
@@ -315,11 +344,9 @@ namespace ConsoleApp2
                     confirmDialog.Destroy();
                 }
             };
-
-            // Start resource monitoring timer
+            
             resourceMonitorTimer = new System.Threading.Timer(UpdateResourceUsage, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
-
-            // Properly handle window close event
+            
             window.DeleteEvent += OnWindowDeleteEvent;
             window.ShowAll();
         }
@@ -327,17 +354,15 @@ namespace ConsoleApp2
         private void OnWindowDeleteEvent(object o, DeleteEventArgs e)
         {
             CleanupAndExit();
-            e.RetVal = true; // Allow the window to close
+            e.RetVal = true;
         }
 
         private void CleanupAndExit()
         {
             isDisposing = true;
             
-            // Stop resource monitoring
             resourceMonitorTimer?.Dispose();
             
-            // Stop all running processes
             var processesToKill = new List<Process>(runningProcesses.Values);
             foreach (var process in processesToKill)
             {
@@ -413,7 +438,6 @@ namespace ConsoleApp2
                 {
                     if (!string.IsNullOrEmpty(e.Data) && !isDisposing)
                     {
-                        // Log to console instead of showing popup for each line
                         Console.WriteLine($"[{title}] Output: {e.Data}");
                     }
                 };
@@ -422,7 +446,6 @@ namespace ConsoleApp2
                 {
                     if (!string.IsNullOrEmpty(e.Data) && !isDisposing)
                     {
-                        // Log to console instead of showing popup for each line
                         Console.WriteLine($"[{title}] Error: {e.Data}");
                     }
                 };
@@ -442,7 +465,7 @@ namespace ConsoleApp2
                                 processResources.Remove(title);
                             }
                             UpdateScriptStatus(title, "⚫ Stopped", "");
-                            // Clean up temp file
+                            
                             if (File.Exists(tempFile))
                                 File.Delete(tempFile);
                         }
@@ -550,7 +573,7 @@ namespace ConsoleApp2
                                 }
                             }
                             runningProcesses.Remove(title);
-                            dialog.Respond(ResponseType.Cancel); // Close the dialog instead of keeping it open
+                            dialog.Respond(ResponseType.Cancel);
                         }
                         catch (Exception ex)
                         {
@@ -623,7 +646,6 @@ namespace ConsoleApp2
                 {
                     if (!process.HasExited)
                     {
-                        // Get process info using ps command
                         var psProcess = new Process
                         {
                             StartInfo = new ProcessStartInfo
